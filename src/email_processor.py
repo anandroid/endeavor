@@ -2,9 +2,10 @@ import time
 import threading
 import requests
 import numpy as np
-from typing import Dict, List, Set
+import heapq
+from typing import Dict, List, Set, Tuple
 from dataclasses import dataclass
-from collections import defaultdict, deque
+from collections import defaultdict
 import concurrent.futures
 
 
@@ -28,7 +29,7 @@ class EmailResponseSystem:
         self.dependency_graph: Dict[str, List[str]] = defaultdict(list)
         self.dependents_graph: Dict[str, List[str]] = defaultdict(list)
         self.dependency_count: Dict[str, int] = {}  # Track remaining deps
-        self.processing_queue: deque = deque()  # Queue of ready emails
+        self.processing_queue: List[Tuple[float, str]] = []  # Priority queue
         self.queue_lock = threading.Lock()  # Lock for queue operations
         self.response_counter = 0
         self.responses = [
@@ -92,17 +93,18 @@ class EmailResponseSystem:
         # Add emails with no dependencies to processing queue
         for email in emails:
             if self.dependency_count[email.email_id] == 0:
-                self.processing_queue.append(email.email_id)
+                heapq.heappush(self.processing_queue, (email.deadline, email.email_id))
 
     def get_ready_emails(self) -> List[str]:
-        """Get emails ready for processing from queue"""
+        """Get emails ready for processing from priority queue"""
         ready = []
         with self.queue_lock:
-            # Get all currently ready emails from queue
+            # Get all currently ready emails from priority queue
             while self.processing_queue:
-                email_id = self.processing_queue.popleft()
+                deadline, email_id = heapq.heappop(self.processing_queue)
                 if email_id not in self.completed_emails:
                     ready.append(email_id)
+                # If email was already completed, continue to next
         return ready
 
     def mark_email_completed(self, email_id: str):
@@ -117,7 +119,11 @@ class EmailResponseSystem:
 
                     # If all dependencies are satisfied, add to processing queue
                     if self.dependency_count[dependent_email_id] == 0:
-                        self.processing_queue.append(dependent_email_id)
+                        dependent_email = self.emails[dependent_email_id]
+                        heapq.heappush(
+                            self.processing_queue,
+                            (dependent_email.deadline, dependent_email_id)
+                        )
 
     def mock_openai_response(self, subject: str, body: str) -> str:
         """Mock OpenAI response with timing constraints"""
