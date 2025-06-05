@@ -4,7 +4,7 @@ import requests
 import numpy as np
 from typing import Dict, List, Set
 from dataclasses import dataclass
-from collections import defaultdict
+from collections import defaultdict, deque
 import concurrent.futures
 
 
@@ -27,7 +27,9 @@ class EmailResponseSystem:
         self.emails: Dict[str, Email] = {}
         self.dependency_graph: Dict[str, List[str]] = defaultdict(list)
         self.dependents_graph: Dict[str, List[str]] = defaultdict(list)
-        self.potentially_ready_emails: Set[str] = set()
+        self.dependency_count: Dict[str, int] = {}  # Track remaining deps
+        self.processing_queue: deque = deque()  # Queue of ready emails
+        self.queue_lock = threading.Lock()  # Lock for queue operations
         self.response_counter = 0
         self.responses = [
             "Thank you for your email. I will get back to you shortly.",
@@ -77,53 +79,45 @@ class EmailResponseSystem:
         return emails
 
     def build_dependency_graph(self, emails: List[Email]):
-        """Build dependency graph from emails"""
+        """Build dependency graph and initialize processing queue"""
         self.emails = {email.email_id: email for email in emails}
 
+        # Initialize dependency counts
         for email in emails:
+            self.dependency_count[email.email_id] = len(email.dependencies)
             for dep_id in email.dependencies:
                 self.dependency_graph[email.email_id].append(dep_id)
                 self.dependents_graph[dep_id].append(email.email_id)
 
-            # Initialize potentially ready emails with those having no dependencies
-            if not email.dependencies:
-                self.potentially_ready_emails.add(email.email_id)
+        # Add emails with no dependencies to processing queue
+        for email in emails:
+            if self.dependency_count[email.email_id] == 0:
+                self.processing_queue.append(email.email_id)
 
     def get_ready_emails(self) -> List[str]:
-        """Get emails that have no pending dependencies (optimized graph version)"""
+        """Get emails ready for processing from queue"""
         ready = []
-        emails_to_remove = set()
-
-        # Only check emails in potentially_ready_emails set
-        for email_id in self.potentially_ready_emails.copy():
-            if email_id in self.completed_emails:
-                emails_to_remove.add(email_id)
-                continue
-
-            email = self.emails[email_id]
-            # Check if all dependencies are completed
-            all_deps_completed = all(
-                dep_id in self.completed_emails
-                for dep_id in email.dependencies
-            )
-
-            if all_deps_completed:
-                ready.append(email_id)
-                emails_to_remove.add(email_id)
-
-        # Remove processed emails from potentially ready set
-        self.potentially_ready_emails -= emails_to_remove
+        with self.queue_lock:
+            # Get all currently ready emails from queue
+            while self.processing_queue:
+                email_id = self.processing_queue.popleft()
+                if email_id not in self.completed_emails:
+                    ready.append(email_id)
         return ready
 
     def mark_email_completed(self, email_id: str):
-        """Mark email as completed and update potentially ready emails"""
+        """Mark email as completed and update dependency counts"""
         with self.completion_lock:
             self.completed_emails.add(email_id)
-
-            # Add all dependents of this email to potentially ready set
+        # Update dependency counts for all dependents
+        with self.queue_lock:
             for dependent_email_id in self.dependents_graph[email_id]:
                 if dependent_email_id not in self.completed_emails:
-                    self.potentially_ready_emails.add(dependent_email_id)
+                    self.dependency_count[dependent_email_id] -= 1
+
+                    # If all dependencies are satisfied, add to processing queue
+                    if self.dependency_count[dependent_email_id] == 0:
+                        self.processing_queue.append(dependent_email_id)
 
     def mock_openai_response(self, subject: str, body: str) -> str:
         """Mock OpenAI response with timing constraints"""
