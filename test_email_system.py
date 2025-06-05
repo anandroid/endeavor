@@ -14,7 +14,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 def test_email_system():
     """Test the email system with a sample API key"""
     # Sample API key (replace with actual one)
-    api_key = "apretzell0506"  # Example format
+    api_key = "anandkumar0506"  # Example format
 
     print("Testing Email Response System")
     print(f"API Key: {api_key}")

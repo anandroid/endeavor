@@ -27,6 +27,7 @@ class EmailResponseSystem:
         self.emails: Dict[str, Email] = {}
         self.dependency_graph: Dict[str, List[str]] = defaultdict(list)
         self.dependents_graph: Dict[str, List[str]] = defaultdict(list)
+        self.potentially_ready_emails: Set[str] = set()
         self.response_counter = 0
         self.responses = [
             "Thank you for your email. I will get back to you shortly.",
@@ -84,12 +85,22 @@ class EmailResponseSystem:
                 self.dependency_graph[email.email_id].append(dep_id)
                 self.dependents_graph[dep_id].append(email.email_id)
 
+            # Initialize potentially ready emails with those having no dependencies
+            if not email.dependencies:
+                self.potentially_ready_emails.add(email.email_id)
+
     def get_ready_emails(self) -> List[str]:
-        """Get emails that have no pending dependencies"""
+        """Get emails that have no pending dependencies (optimized graph version)"""
         ready = []
-        for email_id, email in self.emails.items():
+        emails_to_remove = set()
+
+        # Only check emails in potentially_ready_emails set
+        for email_id in self.potentially_ready_emails.copy():
             if email_id in self.completed_emails:
+                emails_to_remove.add(email_id)
                 continue
+
+            email = self.emails[email_id]
             # Check if all dependencies are completed
             all_deps_completed = all(
                 dep_id in self.completed_emails
@@ -98,8 +109,21 @@ class EmailResponseSystem:
 
             if all_deps_completed:
                 ready.append(email_id)
+                emails_to_remove.add(email_id)
 
+        # Remove processed emails from potentially ready set
+        self.potentially_ready_emails -= emails_to_remove
         return ready
+
+    def mark_email_completed(self, email_id: str):
+        """Mark email as completed and update potentially ready emails"""
+        with self.completion_lock:
+            self.completed_emails.add(email_id)
+
+            # Add all dependents of this email to potentially ready set
+            for dependent_email_id in self.dependents_graph[email_id]:
+                if dependent_email_id not in self.completed_emails:
+                    self.potentially_ready_emails.add(dependent_email_id)
 
     def mock_openai_response(self, subject: str, body: str) -> str:
         """Mock OpenAI response with timing constraints"""
@@ -161,9 +185,8 @@ class EmailResponseSystem:
         success = self.send_response(email_id, response_body)
 
         if success:
-            # Mark as completed
-            with self.completion_lock:
-                self.completed_emails.add(email_id)
+            # Mark as completed and update graph
+            self.mark_email_completed(email_id)
 
             # Wait 100 microseconds before allowing dependent emails
             time.sleep(0.0001)
