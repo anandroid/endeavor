@@ -1,0 +1,4 @@
+boto3
+localstack-client
+flake8
+pytest
