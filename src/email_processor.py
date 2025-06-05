@@ -6,7 +6,7 @@ from typing import Dict, List, Set, Tuple, Optional
 from dataclasses import dataclass
 from collections import defaultdict
 import concurrent.futures
-from .response_providers import ResponseProvider, MockResponseProvider
+from src.response_providers import ResponseProvider, MockResponseProvider
 
 
 @dataclass
@@ -151,6 +151,7 @@ class EmailResponseSystem:
             print(f"Failed to send response for {email_id}: {e}")
             return False
 
+
     def process_email(self, email_id: str) -> Tuple[bool, bool]:
         """Process a single email (generate and send response)"""
         email = self.emails[email_id]
@@ -254,12 +255,12 @@ class EmailResponseSystem:
 
 def main():
     # Generate API key (replace with your actual key)
-    api_key = "apretzell0506"
+    api_key = "anandkumar0506"
 
     # Choose response provider
     # Option 1: Use mock responses (default)
     mock_provider = MockResponseProvider()
-    processor = EmailResponseSystem(api_key=api_key, test_mode=True,
+    processor = EmailResponseSystem(api_key=api_key, test_mode=False,
                                     response_provider=mock_provider)
 
     # Option 2: Use real OpenAI API (uncomment below)

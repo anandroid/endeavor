@@ -22,7 +22,7 @@ def test_email_system():
     print("-" * 50)
 
     try:
-        processor = EmailResponseSystem(api_key=api_key, test_mode=True)
+        processor = EmailResponseSystem(api_key=api_key, test_mode=False)
         processor.run()
 
         print("\nTest completed successfully!")
