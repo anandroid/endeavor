@@ -170,13 +170,14 @@ class EmailResponseSystem:
         current_time = time.time()
         time_elapsed = current_time - email.fetch_time
 
-        if time_elapsed >= email.deadline:
+        # Check if deadline has passed but still process to unblock dependents
+        missed_deadline = time_elapsed >= email.deadline
+        if missed_deadline:
             deadline_msg = (
                 f"Email {email_id} missed deadline "
-                f"({time_elapsed:.2f}s >= {email.deadline}s)"
+                f"({time_elapsed:.2f}s >= {email.deadline}s) - processing anyway"
             )
             print(deadline_msg)
-            return False
 
         # Generate response
         response_body = self.mock_openai_response(email.subject, email.body)
@@ -191,7 +192,8 @@ class EmailResponseSystem:
             # Wait 100 microseconds before allowing dependent emails
             time.sleep(0.0001)
 
-            print(f"Completed email {email_id}")
+            status = "late" if missed_deadline else "on-time"
+            print(f"Completed email {email_id} ({status})")
             return True
 
         return False
