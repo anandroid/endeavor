@@ -271,11 +271,9 @@ class EmailResponseSystem:
 def main():
     # Generate API key (replace with your actual key)
     api_key = "anandkumar0506"
-    openai_api_key = "";
+    openai_api_key = ""
 
     # Choose response provider
-    # Option 1: Use mock responses (default)
-    mock_provider = MockResponseProvider()
     openai_provider = OpenAIResponseProvider(openai_api_key)
     processor = EmailResponseSystem(api_key=api_key, test_mode=False,
                                     response_provider=openai_provider)
