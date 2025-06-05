@@ -6,7 +6,7 @@ from typing import Dict, List, Set, Tuple, Optional
 from dataclasses import dataclass
 from collections import defaultdict
 import concurrent.futures
-from src.response_providers import ResponseProvider, MockResponseProvider
+from src.response_providers import ResponseProvider, MockResponseProvider, OpenAIResponseProvider
 
 
 @dataclass
@@ -32,6 +32,7 @@ class EmailResponseSystem:
         self.dependency_count: Dict[str, int] = {}
         self.processing_queue: List[Tuple[float, str]] = []
         self.queue_lock = threading.Lock()
+        self.processing_emails: Set[str] = set()  # Track emails being processed
 
         # Set up response provider
         if response_provider is None:
@@ -97,16 +98,20 @@ class EmailResponseSystem:
                 heapq.heappush(self.processing_queue,
                                (email.deadline, email.email_id))
 
-    def get_ready_emails(self) -> List[str]:
-        """Get emails ready for processing from priority queue"""
+    def get_ready_emails(self, max_batch_size: int = 80) -> List[str]:
+        """Get batch of emails ready for processing from priority queue"""
         ready = []
         with self.queue_lock:
-            # Get all currently ready emails from priority queue
-            while self.processing_queue:
+            # Get limited batch to avoid emptying entire queue
+            batch_count = 0
+
+            while self.processing_queue and batch_count < max_batch_size:
                 deadline, email_id = heapq.heappop(self.processing_queue)
                 if email_id not in self.completed_emails:
                     ready.append(email_id)
+                    batch_count += 1
                 # If email was already completed, continue to next
+
         return ready
 
     def mark_email_completed(self, email_id: str):
@@ -151,7 +156,6 @@ class EmailResponseSystem:
             print(f"Failed to send response for {email_id}: {e}")
             return False
 
-
     def process_email(self, email_id: str) -> Tuple[bool, bool]:
         """Process a single email (generate and send response)"""
         email = self.emails[email_id]
@@ -179,6 +183,8 @@ class EmailResponseSystem:
         if success:
             status = "late" if missed_deadline else "on-time"
             print(f"Completed email {email_id} ({status})")
+        else:
+            print(f"Failed to process email {email_id}")
 
         return success, missed_deadline
 
@@ -186,7 +192,7 @@ class EmailResponseSystem:
         """Process all emails respecting dependencies and deadlines"""
         results = {}
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=80) as executor:
             future_to_email = {}
 
             while len(self.completed_emails) < len(self.emails):
@@ -194,36 +200,40 @@ class EmailResponseSystem:
                 ready_emails = self.get_ready_emails()
 
                 if not ready_emails:
-                    # Wait a bit and check again
-                    time.sleep(0.001)
+                    # Adaptive wait - longer when no emails ready
+                    time.sleep(0.01)  # 10ms instead of 1ms
                     continue
 
                 # Submit ready emails for processing (parallel response generation)
                 for email_id in ready_emails:
-                    if email_id not in future_to_email:
+                    if (email_id not in future_to_email and
+                            email_id not in self.processing_emails and
+                            email_id not in self.completed_emails):
+                        self.processing_emails.add(email_id)
                         future = executor.submit(self.process_email, email_id)
                         future_to_email[future] = email_id
 
-                # Check completed futures and handle completion sequentially
+                # Batch process completed futures for efficiency
                 completed_futures = []
+                completed_emails_batch = []
+
                 for future in future_to_email:
                     if future.done():
                         email_id = future_to_email[future]
                         try:
                             success, missed_deadline = future.result()
                             results[email_id] = success
-
-                            # Handle completion sequentially for thread safety
-                            if success:
-                                self.mark_email_completed(email_id)
-                                # Wait 100 microseconds
-                                time.sleep(0.0001)
+                            completed_emails_batch.append((email_id, success))
                         except Exception as e:
                             print(f"Error processing email {email_id}: {e}")
                             results[email_id] = False
-                            # Still mark as completed to unblock dependents
-                            self.mark_email_completed(email_id)
+                            completed_emails_batch.append((email_id, False))
                         completed_futures.append(future)
+
+                # Batch update completions to reduce lock contention
+                for email_id, success in completed_emails_batch:
+                    self.processing_emails.discard(email_id)  # Remove from processing set
+                    self.mark_email_completed(email_id)
 
                 # Clean up completed futures
                 for future in completed_futures:
@@ -248,7 +258,12 @@ class EmailResponseSystem:
 
         # Print summary
         successful = sum(1 for success in results.values() if success)
+        total_results = len(results)
         print(f"\nResults: {successful}/{len(emails)} emails processed")
+        if total_results != len(emails):
+            print(f"WARNING: Results count ({total_results}) != Email count ({len(emails)})")
+            if total_results > len(emails):
+                print("Possible duplicate processing detected!")
 
         return results
 
@@ -256,12 +271,14 @@ class EmailResponseSystem:
 def main():
     # Generate API key (replace with your actual key)
     api_key = "anandkumar0506"
+    openai_api_key = "";
 
     # Choose response provider
     # Option 1: Use mock responses (default)
     mock_provider = MockResponseProvider()
+    openai_provider = OpenAIResponseProvider(openai_api_key)
     processor = EmailResponseSystem(api_key=api_key, test_mode=False,
-                                    response_provider=mock_provider)
+                                    response_provider=openai_provider)
 
     # Option 2: Use real OpenAI API (uncomment below)
     # openai_api_key = "your-openai-api-key-here"
