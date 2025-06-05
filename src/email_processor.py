@@ -1,12 +1,12 @@
 import time
 import threading
 import requests
-import numpy as np
 import heapq
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Set, Tuple, Optional
 from dataclasses import dataclass
 from collections import defaultdict
 import concurrent.futures
+from .response_providers import ResponseProvider, MockResponseProvider
 
 
 @dataclass
@@ -20,7 +20,8 @@ class Email:
 
 
 class EmailResponseSystem:
-    def __init__(self, api_key: str, test_mode: bool = True):
+    def __init__(self, api_key: str, test_mode: bool = True,
+                 response_provider: Optional[ResponseProvider] = None):
         self.api_key = api_key
         self.test_mode = test_mode
         self.completed_emails: Set[str] = set()
@@ -28,16 +29,15 @@ class EmailResponseSystem:
         self.emails: Dict[str, Email] = {}
         self.dependency_graph: Dict[str, List[str]] = defaultdict(list)
         self.dependents_graph: Dict[str, List[str]] = defaultdict(list)
-        self.dependency_count: Dict[str, int] = {}  # Track remaining deps
-        self.processing_queue: List[Tuple[float, str]] = []  # Priority queue
-        self.queue_lock = threading.Lock()  # Lock for queue operations
-        self.response_counter = 0
-        self.responses = [
-            "Thank you for your email. I will get back to you shortly.",
-            "I appreciate your message, and I'll respond as soon as possible.",
-            "Your inquiry has been received. I'll review it and reply soon.",
-            "Thanks for reaching out. Expect a detailed response shortly.",
-        ]
+        self.dependency_count: Dict[str, int] = {}
+        self.processing_queue: List[Tuple[float, str]] = []
+        self.queue_lock = threading.Lock()
+
+        # Set up response provider
+        if response_provider is None:
+            self.response_provider = MockResponseProvider()
+        else:
+            self.response_provider = response_provider
 
         # API endpoints
         self.get_url = (
@@ -86,6 +86,7 @@ class EmailResponseSystem:
         # Initialize dependency counts
         for email in emails:
             self.dependency_count[email.email_id] = len(email.dependencies)
+
             for dep_id in email.dependencies:
                 self.dependency_graph[email.email_id].append(dep_id)
                 self.dependents_graph[dep_id].append(email.email_id)
@@ -93,7 +94,8 @@ class EmailResponseSystem:
         # Add emails with no dependencies to processing queue
         for email in emails:
             if self.dependency_count[email.email_id] == 0:
-                heapq.heappush(self.processing_queue, (email.deadline, email.email_id))
+                heapq.heappush(self.processing_queue,
+                               (email.deadline, email.email_id))
 
     def get_ready_emails(self) -> List[str]:
         """Get emails ready for processing from priority queue"""
@@ -111,6 +113,7 @@ class EmailResponseSystem:
         """Mark email as completed and update dependency counts"""
         with self.completion_lock:
             self.completed_emails.add(email_id)
+
         # Update dependency counts for all dependents
         with self.queue_lock:
             for dependent_email_id in self.dependents_graph[email_id]:
@@ -124,20 +127,6 @@ class EmailResponseSystem:
                             self.processing_queue,
                             (dependent_email.deadline, dependent_email_id)
                         )
-
-    def mock_openai_response(self, subject: str, body: str) -> str:
-        """Mock OpenAI response with timing constraints"""
-        # Generate delay between 0.4 and 0.6 seconds
-        delay = np.random.exponential(scale=0.5)
-        delay = max(0.4, min(delay, 0.6))
-        time.sleep(delay)
-        # Cycle through responses
-        response_text = self.responses[
-            self.response_counter % len(self.responses)
-        ]
-        self.response_counter += 1
-
-        return f"Re: {subject}\n\n{response_text}"
 
     def send_response(self, email_id: str, response_body: str) -> bool:
         """Send response via POST request"""
@@ -162,8 +151,8 @@ class EmailResponseSystem:
             print(f"Failed to send response for {email_id}: {e}")
             return False
 
-    def process_email(self, email_id: str) -> bool:
-        """Process a single email"""
+    def process_email(self, email_id: str) -> Tuple[bool, bool]:
+        """Process a single email (generate and send response)"""
         email = self.emails[email_id]
 
         # Check if deadline has passed
@@ -180,23 +169,17 @@ class EmailResponseSystem:
             print(deadline_msg)
 
         # Generate response
-        response_body = self.mock_openai_response(email.subject, email.body)
+        response_body = self.response_provider.generate_response(
+            email.subject, email.body)
 
         # Send response
         success = self.send_response(email_id, response_body)
 
         if success:
-            # Mark as completed and update graph
-            self.mark_email_completed(email_id)
-
-            # Wait 100 microseconds before allowing dependent emails
-            time.sleep(0.0001)
-
             status = "late" if missed_deadline else "on-time"
             print(f"Completed email {email_id} ({status})")
-            return True
 
-        return False
+        return success, missed_deadline
 
     def process_emails_parallel(self) -> Dict[str, bool]:
         """Process all emails respecting dependencies and deadlines"""
@@ -214,23 +197,31 @@ class EmailResponseSystem:
                     time.sleep(0.001)
                     continue
 
-                # Submit ready emails for processing
+                # Submit ready emails for processing (parallel response generation)
                 for email_id in ready_emails:
                     if email_id not in future_to_email:
                         future = executor.submit(self.process_email, email_id)
                         future_to_email[future] = email_id
 
-                # Check completed futures
+                # Check completed futures and handle completion sequentially
                 completed_futures = []
                 for future in future_to_email:
                     if future.done():
                         email_id = future_to_email[future]
                         try:
-                            result = future.result()
-                            results[email_id] = result
+                            success, missed_deadline = future.result()
+                            results[email_id] = success
+
+                            # Handle completion sequentially for thread safety
+                            if success:
+                                self.mark_email_completed(email_id)
+                                # Wait 100 microseconds
+                                time.sleep(0.0001)
                         except Exception as e:
                             print(f"Error processing email {email_id}: {e}")
                             results[email_id] = False
+                            # Still mark as completed to unblock dependents
+                            self.mark_email_completed(email_id)
                         completed_futures.append(future)
 
                 # Clean up completed futures
@@ -263,12 +254,21 @@ class EmailResponseSystem:
 
 def main():
     # Generate API key (replace with your actual key)
-    api_key = "apretzell0506"  # Example: first initial + last name + DDMM
+    api_key = "apretzell0506"
 
-    # Create and run email processor
-    processor = EmailResponseSystem(api_key=api_key, test_mode=True)
+    # Choose response provider
+    # Option 1: Use mock responses (default)
+    mock_provider = MockResponseProvider()
+    processor = EmailResponseSystem(api_key=api_key, test_mode=True,
+                                    response_provider=mock_provider)
+
+    # Option 2: Use real OpenAI API (uncomment below)
+    # openai_api_key = "your-openai-api-key-here"
+    # openai_provider = OpenAIResponseProvider(openai_api_key)
+    # processor = EmailResponseSystem(api_key=api_key, test_mode=True,
+    #                                 response_provider=openai_provider)
+
     results = processor.run()
-
     return results
 
 
