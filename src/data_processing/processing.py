@@ -1,5 +1,5 @@
 from typing import Optional
-from utils.s3_utils import get_s3_client
+from src.utils.s3_utils  import get_s3_client
 
 
 def process_file(
