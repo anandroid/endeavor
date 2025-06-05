@@ -1,6 +1,6 @@
 # Endeavor Data Processing Example
 
-This repository contains a small Python project used for interview preparation.
+This repository contains a small Python project
 It demonstrates a data processing workflow that can read from local files or from
 S3 (using LocalStack during development).
 
