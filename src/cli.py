@@ -1,6 +1,6 @@
 import argparse
 
-from data_processing.processing import process_file
+from data_processing.processing import DataProcessingService
 
 
 def main() -> None:
@@ -11,7 +11,8 @@ def main() -> None:
     args = parser.parse_args()
 
     use_s3 = args.bucket is not None
-    process_file(args.input, args.output, use_s3=use_s3, bucket_name=args.bucket)
+    service = DataProcessingService()
+    service.process_file(args.input, args.output, use_s3=use_s3, bucket_name=args.bucket)
 
 
 if __name__ == '__main__':
